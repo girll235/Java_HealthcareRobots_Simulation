@@ -1,0 +1,4 @@
+INDEX VERSION 1.134+C:\Users\GigaByte\Desktop\Robot-Health-Sabrine-Ben-Tili-Mohamed-Ammous\.metadata\.plugins\org.eclipse.jdt.core
+356962258.index
+1865797976.index
+205128636.index

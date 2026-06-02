@@ -1,0 +1,222 @@
+package robothealth.core;
+
+import java.awt.Point;
+import java.util.List;
+
+import robothealth.exceptions.CheminBloqueException;
+import robothealth.exceptions.RobotException;
+import robothealth.map.PlanHopital;
+import robothealth.missions.MissionCompagnon;
+
+
+/**
+ * Robot destiné à l'accompagnement du patient.
+ * Il se déplace vers la chambre, analyse l'état du patient puis applique l'ambiance choisie.
+ */
+public class RobotCompagnon extends RobotConnecte {
+    private static final long PAUSE_ETAPE = 180L;
+
+    private int niveauStress;
+    private ModeAmbiance modeAmbiance;
+    private MissionCompagnon missionCourante;
+    private boolean appelVideoActif;
+
+    public RobotCompagnon(String id, int x, int y, double energie) {
+        super(id, x, y, energie);
+        this.niveauStress = 1;
+        this.modeAmbiance = ModeAmbiance.CONVERSATION;
+        this.missionCourante = null;
+        this.appelVideoActif = false;
+    }
+
+    /**
+     * Prépare la mission compagnon et initialise les indicateurs nécessaires.
+     */
+    public synchronized void planifierMission(MissionCompagnon mission) throws RobotException {
+        if (!estDisponible()) {
+            throw new RobotException("Le robot compagnon a déjà une mission en cours.");
+        }
+        verifierMaintenance();
+        verifierEnergie(12);
+        this.missionCourante = mission;
+        this.modeAmbiance = mission.getModeAmbiance();
+        this.niveauStress = mission.getNiveauStressInitial();
+        setStatutMissionAffiche("MISSION COMPAGNON");
+        ajouterHistorique("Mission compagnon planifiée : " + mission.getDescription() + " [" + mission.getCriticite() + "]");
+    }
+
+    @Override
+    public synchronized void deplacer(int nouveauX, int nouveauY) throws RobotException {
+        double distance = Math.hypot(nouveauX - getX(), nouveauY - getY());
+        if (distance > 100) {
+            throw new CheminBloqueException("Distance trop grande pour le robot compagnon : " + distance);
+        }
+
+        double coutEnergie = distance * 0.25;
+        verifierMaintenance();
+        verifierEnergie(coutEnergie);
+        consommerEnergie(coutEnergie);
+        incrementerHeuresDepuisDistance(distance);
+        setPosition(nouveauX, nouveauY);
+        ajouterHistorique(String.format("Déplacement compagnon vers (%d,%d), distance=%.2f", nouveauX, nouveauY, distance));
+    }
+
+    /**
+     * Exécute automatiquement la mission avec affichage détaillé des étapes.
+     */
+    @Override
+    public void effectuerTache() throws RobotException {
+        if (!isEnMarche()) {
+            throw new RobotException("Le robot compagnon doit être démarré pour intervenir.");
+        }
+        if (missionCourante == null) {
+            setStatutMissionAffiche("AUCUNE MISSION");
+            ajouterHistorique("Aucune mission compagnon en attente.");
+            return;
+        }
+
+        try {
+            MissionCompagnon mission = missionCourante;
+            setStatutMissionAffiche("ASSISTANCE : " + mission.getPatient());
+
+            ajouterHistorique("===== DÉBUT MISSION COMPAGNON =====");
+            ajouterHistorique("Type de mission : accompagnement patient.");
+            ajouterHistorique("Étape 1/5 : connexion sécurisée au dossier patient.");
+            connecter(PlanHopital.RESEAU_HOSPITALIER);
+            envoyerDonnees("Ouverture sécurisée du dossier de " + mission.getPatient());
+            pauseAnimation(PAUSE_ETAPE);
+
+            ajouterHistorique("Étape 2/5 : déplacement intelligent vers " + mission.getChambre() + ".");
+            suivreTrajet(PlanHopital.calculerTrajetMinimal(getX(), getY(), mission.getDestinationX(), mission.getDestinationY()),
+                    "Approche patient");
+
+            ajouterHistorique("Étape 3/5 : analyse de l'état du patient.");
+            analyserEtatPatient(mission.getNiveauStressInitial());
+            pauseAnimation(PAUSE_ETAPE);
+
+            ajouterHistorique("Étape 4/5 : assistance avec le mode " + modeAmbiance + ".");
+            switch (modeAmbiance) {
+                case MUSIQUE:
+                    jouerMusique("Playlist relaxante");
+                    break;
+                case LECTURE:
+                    lancerLecture("Lecture guidée et rassurante");
+                    break;
+                case APPEL_VIDEO:
+                    gererAppelVideo("Famille / infirmier référent");
+                    break;
+                case CONVERSATION:
+                default:
+                    tenirConversationEmpathique();
+                    break;
+            }
+            pauseAnimation(PAUSE_ETAPE);
+
+            ajouterHistorique("Étape 5/5 : envoi du bilan et clôture.");
+            envoyerDonnees("Bilan mission compagnon pour " + mission.getPatient() + " : stress=" + niveauStress + "/10");
+            ajouterHistorique("Mission compagnon terminée pour " + mission.getPatient());
+            deconnecter();
+
+            missionCourante = null;
+            appelVideoActif = false;
+            afficherMissionTerminee();
+            ajouterHistorique("===== FIN MISSION COMPAGNON =====");
+        } catch (RobotException e) {
+            journaliserErreur(e.getMessage());
+            throw e;
+        }
+    }
+
+    private void suivreTrajet(List<Point> trajet, String libelleEtape) throws RobotException {
+        if (trajet.size() <= 1) {
+            ajouterHistorique(libelleEtape + " : aucun déplacement nécessaire.");
+            return;
+        }
+
+        for (int i = 1; i < trajet.size(); i++) {
+            Point etape = trajet.get(i);
+            ajouterHistorique(libelleEtape + " - sous-étape " + i + "/" + (trajet.size() - 1)
+                    + " vers (" + etape.x + "," + etape.y + ")");
+            deplacer(etape.x, etape.y);
+            pauseAnimation(PAUSE_ETAPE);
+        }
+    }
+
+    public void analyserEtatPatient(int niveauStress) {
+        this.niveauStress = Math.max(1, Math.min(10, niveauStress));
+        ajouterHistorique("Analyse du patient, niveau de stress = " + this.niveauStress + "/10");
+        if (this.niveauStress > 7) {
+            jouerMusique("Mode apaisement d'urgence");
+            envoyerAlerteInfirmier();
+        }
+    }
+
+    public void jouerMusique(String playlist) {
+        consommerEnergie(2);
+        ajouterHistorique("Diffusion audio : " + playlist);
+    }
+
+    public void lancerLecture(String contenu) {
+        consommerEnergie(1.5);
+        ajouterHistorique("Lecture assistée : " + contenu);
+    }
+
+    public void gererAppelVideo(String interlocuteur) {
+        appelVideoActif = true;
+        consommerEnergie(4);
+        ajouterHistorique("Appel vidéo lancé avec " + interlocuteur);
+    }
+
+    public void tenirConversationEmpathique() {
+        consommerEnergie(1);
+        ajouterHistorique("Conversation empathique avec le patient");
+    }
+
+    public void envoyerAlerteInfirmier() {
+        ajouterHistorique("Alerte envoyée à l'infirmier de garde");
+    }
+
+    /**
+     * Ajout additif : permet au gestionnaire de libérer proprement le robot lors d'une réaffectation.
+     */
+    public synchronized void libererMissionPourReaffectation(String raison) {
+        ajouterHistorique("Mission compagnon libérée pour réaffectation : " + raison);
+        this.missionCourante = null;
+        this.appelVideoActif = false;
+        reinitialiserStatutAffiche();
+    }
+
+    /**
+     * Ajout additif : estimation utilisée par le gestionnaire pour choisir un robot viable.
+     */
+    public synchronized double estimerEnergieMission(MissionCompagnon mission) {
+        int distance = PlanHopital.distanceMinimale(getX(), getY(), mission.getDestinationX(), mission.getDestinationY());
+        return 10 + (distance * 0.25);
+    }
+
+    @Override
+    public synchronized boolean estDisponible() {
+        return missionCourante == null;
+    }
+
+    @Override
+    public synchronized String getMissionCourante() {
+        return missionCourante == null ? "Aucune" : missionCourante.getDescription();
+    }
+
+    public synchronized int getNiveauStress() {
+        return niveauStress;
+    }
+
+    public synchronized ModeAmbiance getModeAmbiance() {
+        return modeAmbiance;
+    }
+
+    public synchronized MissionCompagnon getMissionCompagnon() {
+        return missionCourante;
+    }
+
+    public synchronized boolean isAppelVideoActif() {
+        return appelVideoActif;
+    }
+}

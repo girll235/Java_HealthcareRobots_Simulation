@@ -1,0 +1,242 @@
+package robothealth.core;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import robothealth.exceptions.EnergieInsuffisanteException;
+import robothealth.exceptions.MaintenanceRequiseException;
+import robothealth.exceptions.RobotException;
+import robothealth.util.JournalListener;
+
+/**
+ * Classe mère de tous les robots.
+ * Elle centralise l'état général du robot : position, énergie, historique et statut de mission.
+ */
+public abstract class Robot {
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
+    private static final String AUCUNE_MISSION = "AUCUNE MISSION";
+
+    private final String id;
+    private int x;
+    private int y;
+    private double energie;
+    private int heuresUtilisation;
+    private boolean enMarche;
+    private String statutMissionAffiche;
+    private final List<String> historiqueActions;
+    private final List<JournalListener> listeners;
+
+    protected Robot(String id, int x, int y, double energie) {
+        this.id = id;
+        this.x = x;
+        this.y = y;
+        this.energie = Math.max(0, Math.min(100, energie));
+        this.heuresUtilisation = 0;
+        this.enMarche = false;
+        this.statutMissionAffiche = AUCUNE_MISSION;
+        this.historiqueActions = new ArrayList<>();
+        this.listeners = new ArrayList<>();
+        ajouterHistorique("Robot créé et initialisé à la position (" + x + "," + y + ")");
+    }
+
+    /**
+     * Ajoute un log normal dans l'historique puis le diffuse à l'interface.
+     */
+    public final synchronized void ajouterHistorique(String action) {
+        String entree = String.format("[%s] %s - %s", LocalDateTime.now().format(FORMATTER), id, action);
+        historiqueActions.add(entree);
+        for (JournalListener listener : listeners) {
+            listener.onLog(entree, false);
+        }
+    }
+
+    /**
+     * Ajoute un log d'erreur pour rendre les exceptions visibles en temps réel.
+     */
+    protected final synchronized void journaliserErreur(String message) {
+        String entree = String.format("[%s] %s - ERREUR: %s", LocalDateTime.now().format(FORMATTER), id, message);
+        historiqueActions.add(entree);
+        for (JournalListener listener : listeners) {
+            listener.onLog(entree, true);
+        }
+    }
+
+    public synchronized void addJournalListener(JournalListener listener) {
+        if (listener != null && !listeners.contains(listener)) {
+            listeners.add(listener);
+        }
+    }
+
+    /**
+     * Vérifie que le robot possède assez d'énergie avant une action.
+     */
+    public synchronized void verifierEnergie(double energieRequise) throws EnergieInsuffisanteException {
+        if (energie < energieRequise) {
+            throw new EnergieInsuffisanteException(
+                    String.format("Énergie insuffisante : %.1f%% requis, %.1f%% disponible.", energieRequise, energie));
+        }
+    }
+
+    /**
+     * Simule une contrainte de maintenance au-delà d'un seuil d'utilisation.
+     */
+    public synchronized void verifierMaintenance() throws MaintenanceRequiseException {
+        if (heuresUtilisation > 100) {
+            throw new MaintenanceRequiseException("Maintenance requise : seuil de 100 heures dépassé.");
+        }
+    }
+
+    /**
+     * Ajout additif : expose l'état de maintenance 
+     */
+    public synchronized boolean aBesoinMaintenance() {
+        return heuresUtilisation > 100;
+    }
+
+    /**
+     * Ajout additif : permet au bouton de maintenance de remettre le compteur à zéro.
+     */
+    public synchronized void reinitialiserMaintenance() {
+        this.heuresUtilisation = 0;
+        ajouterHistorique("Maintenance effectuée : compteur d'heures réinitialisé.");
+    }
+
+    /**
+     * Ajout additif : expose une remise à zéro visuelle du statut sans toucher aux comportements historiques.
+     */
+    public synchronized void reinitialiserStatutAffiche() {
+        this.statutMissionAffiche = AUCUNE_MISSION;
+    }
+
+    /**
+     * Démarre le robot s'il est suffisamment chargé et maintenu.
+     */
+    public synchronized void demarrer() throws RobotException {
+        verifierMaintenance();
+        verifierEnergie(10);
+        enMarche = true;
+        ajouterHistorique("Robot démarré");
+    }
+
+    /**
+     * Arrête le robot sans effacer sa mission courante.
+     */
+    public synchronized void arreter() {
+        enMarche = false;
+        ajouterHistorique("Robot arrêté");
+    }
+
+    /**
+     * Décrémente l'énergie après une action métier.
+     */
+    public synchronized void consommerEnergie(double quantite) {
+        energie = Math.max(0, energie - quantite);
+    }
+
+    /**
+     * Recharge partiellement le robot.
+     */
+    public synchronized void recharger(int quantite) {
+        energie = Math.min(100, energie + quantite);
+        ajouterHistorique("Recharge de " + quantite + "%");
+    }
+
+    /**
+     * Convertit une distance parcourue en heures de fonctionnement.
+     */
+    protected synchronized void incrementerHeuresDepuisDistance(double distance) {
+        int heuresAjoutees = (int) Math.ceil(distance / 10.0);
+        heuresUtilisation += heuresAjoutees;
+    }
+
+    /**
+     * Met à jour la position logique du robot dans la grille.
+     */
+    protected synchronized void setPosition(int nouveauX, int nouveauY) {
+        this.x = nouveauX;
+        this.y = nouveauY;
+    }
+
+    /**
+     * Met à jour le texte visible sous le robot dans la GUI.
+     */
+    protected synchronized void setStatutMissionAffiche(String statutMissionAffiche) {
+        this.statutMissionAffiche = statutMissionAffiche;
+    }
+
+    /**
+     * Affiche DONE pendant 0,3 seconde puis remet le texte par défaut.
+     */
+    protected void afficherMissionTerminee() throws RobotException {
+        setStatutMissionAffiche("DONE");
+        pauseAnimation(300);
+        setStatutMissionAffiche(AUCUNE_MISSION);
+    }
+
+    /**
+     * Petite pause utilitaire pour rendre l'animation visible.
+     */
+    protected void pauseAnimation(long dureeMillis) throws RobotException {
+        try {
+            Thread.sleep(dureeMillis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RobotException("Exécution interrompue pendant l'animation.");
+        }
+    }
+
+    public abstract void deplacer(int nouveauX, int nouveauY) throws RobotException;
+
+    public abstract void effectuerTache() throws RobotException;
+
+    public abstract boolean estDisponible();
+
+    public abstract String getMissionCourante();
+
+    public synchronized String getHistorique() {
+        return String.join(System.lineSeparator(), historiqueActions);
+    }
+
+    public synchronized List<String> getHistoriqueActions() {
+        return Collections.unmodifiableList(new ArrayList<>(historiqueActions));
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public synchronized int getX() {
+        return x;
+    }
+
+    public synchronized int getY() {
+        return y;
+    }
+
+    public synchronized double getEnergie() {
+        return energie;
+    }
+
+    public synchronized int getHeuresUtilisation() {
+        return heuresUtilisation;
+    }
+
+    public synchronized boolean isEnMarche() {
+        return enMarche;
+    }
+
+    public synchronized String getStatutMissionAffiche() {
+        return statutMissionAffiche;
+    }
+
+    @Override
+    public synchronized String toString() {
+        return String.format(
+                "%s [ID=%s, position=(%d,%d), énergie=%.1f%%, heures=%d, statut=%s, mission=%s]",
+                getClass().getSimpleName(), id, x, y, energie, heuresUtilisation,
+                statutMissionAffiche, getMissionCourante());
+    }
+}
